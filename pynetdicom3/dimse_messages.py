@@ -2,6 +2,7 @@
 
 from io import BytesIO
 import logging
+from io import StringIO
 
 from pydicom.dataset import Dataset
 from pydicom.tag import Tag
@@ -180,49 +181,50 @@ class DIMSEMessage(object):
             A list of one or more P-DATA service primitives.
         """
         self.ID = context_id
-        p_data_list = []
 
         # The Command Set is always Little Endian Implicit VR (PS3.7 6.3.1)
         #   encode(dataset, is_implicit_VR, is_little_endian)
         encoded_command_set = encode(self.command_set, True, True)
 
         ## COMMAND SET (always)
-        # Split the command set into framents with maximum size max_pdu_length
+        # Split the command set into fragments with maximum size max_pdu_length
         pdv_list = self._bytestream_to_pdv(encoded_command_set, max_pdu_length)
 
+        def denote_last(iterable):
+            it = iter(iterable)
+            current = it.next()
+            for i in it:
+                yield current, False
+                current = i
+            yield current, True
+
         # First to (n - 1)th command data fragment - bits xxxxxx01
-        for pdv in pdv_list[:-1]:
-            pdata = P_DATA()
-            pdata.presentation_data_value_list = [[self.ID, b'\x01' + pdv]]
-
-            p_data_list.append(pdata)
-
         # Last command data fragment - bits xxxxxx11
-        pdata = P_DATA()
-        pdata.presentation_data_value_list = [[self.ID, b'\x03' + pdv_list[-1]]]
-
-        p_data_list.append(pdata)
+        for pdv, last in denote_last(pdv_list):
+            pdata = P_DATA()
+            if last:
+                b = b'\x03'
+            else:
+                b = b'\x01'
+            pdata.presentation_data_value_list = [[self.ID, b + pdv]]
+            yield pdata
 
         ## DATASET (if available)
         #   Check that the Data Set is not empty
-        if self.data_set is not None and self.data_set.getvalue() != b'':
+        if self.data_set is not None:
             # Split the data set into fragments with maximum size max_pdu_length
             pdv_list = self._bytestream_to_pdv(self.data_set, max_pdu_length)
 
             # First to (n - 1)th dataset fragment - bits xxxxxx00
-            for pdv in pdv_list[:-1]:
-                pdata = P_DATA()
-                pdata.presentation_data_value_list = [[self.ID, b'\x00' + pdv]]
-                p_data_list.append(pdata)
-
             # Last dataset fragment - bits xxxxxx10
-            pdata = P_DATA()
-            pdata.presentation_data_value_list = [[self.ID,
-                                                   b'\x02' + pdv_list[-1]]]
-
-            p_data_list.append(pdata)
-
-        return p_data_list
+            for pdv, last in denote_last(pdv_list):
+                pdata = P_DATA()
+                if last:
+                    b = b'\x02'
+                else:
+                    b = b'\x00'
+                pdata.presentation_data_value_list = [[self.ID, b + pdv]]
+                yield pdata
 
     def decode_msg(self, pdata):
         """Converts P-DATA primitives into a DIMSEMessage sub-class.
@@ -340,8 +342,7 @@ class DIMSEMessage(object):
 
         Returns
         -------
-        fragments : list of bytes
-            The fragmented `bytestream`
+        fragments : the fragmented `bytestream`
         """
         if not isinstance(bytestream, (BytesIO, bytes)):
             raise TypeError
@@ -349,22 +350,20 @@ class DIMSEMessage(object):
         if fragment_length < 1:
             raise ValueError('fragment_length must be at least 1.')
 
-        # Convert bytestream to bytes
-        if isinstance(bytestream, BytesIO):
-            bytestream = bytestream.getvalue()
+        # Convert bytes to bytestream
+        if isinstance(bytestream, str):
+            bytestream = StringIO(bytestream)
 
         # Note: Because the PDU includes an extra 6 bytes of data at the start
         #       we need to decrease `fragment_length` by 6 bytes.
         fragment_length -= 6
 
-        fragments = []
-        while len(bytestream) > 0:
+        while True:
             # Add the fragment to the output
-            fragments.append(bytestream[:fragment_length])
-            # Remove the added fragment from the bytestream
-            bytestream = bytestream[fragment_length:]
-
-        return fragments
+            fragment = bytestream.read(fragment_length)
+            if len(fragment) == 0:
+                return
+            yield fragment
 
     def primitive_to_message(self, primitive):
         """Convert a DIMSE primitive to the current DIMSEMessage object.
