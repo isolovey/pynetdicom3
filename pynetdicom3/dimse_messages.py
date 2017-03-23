@@ -352,7 +352,7 @@ class DIMSEMessage(object):
 
         # Convert bytes to bytestream
         if isinstance(bytestream, str):
-            bytestream = StringIO(bytestream)
+            bytestream = BytesIO(bytestream)
 
         # Note: Because the PDU includes an extra 6 bytes of data at the start
         #       we need to decrease `fragment_length` by 6 bytes.
