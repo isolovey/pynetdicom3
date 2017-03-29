@@ -104,6 +104,9 @@ class DULServiceProvider(Thread):
         # ARTIM timer
         self.artim_timer = Timer(dul_timeout)
 
+        # set socket connection timeout to network timeout value
+        self.socket_timeout = dul_timeout
+
         # State machine - PS3.8 Section 9.2
         self.state_machine = StateMachine(self)
 

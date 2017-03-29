@@ -125,6 +125,7 @@ def AE_1(dul):
     """
     # Issue TRANSPORT CONNECT request primitive to local transport service
     dul.scu_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    dul.scu_socket.settimeout(dul.socket_timeout)
     try:
         # CalledPresentationAddress is set by the ACSE and
         #   is an (address, port) tuple
