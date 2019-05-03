@@ -1616,7 +1616,7 @@ class Association(threading.Thread):
         return self._wrap_get_move_responses(transfer_syntax)
 
     def send_c_store(self, dataset, msg_id=1, priority=2, originator_aet=None,
-                     originator_id=None):
+                     originator_id=None, streaming=False, abstract_syntax=None, transfer_syntax=None, sop_instance_uid=None):
         """Send a C-STORE request to the peer AE.
 
         Parameters
@@ -1644,6 +1644,10 @@ class Association(threading.Thread):
             C-STORE request. This is the original *Message ID* parameter value
             for the C-MOVE request primitive for which the
             C-STORE sub-operation is being performed (default ``None``).
+        streaming : bool, optional
+            Treat `dataset` as an iterator. Do not encode in one shot before
+            sending the data. `encode(...)` will have to be called elsewhere
+            in the pipeline.
 
         Returns
         -------
@@ -1721,13 +1725,23 @@ class Association(threading.Thread):
           `9.3.1 <http://dicom.nema.org/medical/dicom/current/output/html/part07.html#sect_9.3.1>`_
           and `Annex C <http://dicom.nema.org/medical/dicom/current/output/html/part07.html#chapter_C>`_
         """
+
+        if abstract_syntax and transfer_syntax:
+            context = self._get_valid_context(
+                abstract_syntax,
+                transfer_syntax,
+                'scu'
+            )
+        else:
+            context = None
+
         # Can't send a C-STORE without an Association
         if not self.is_established:
             raise RuntimeError("The association with a peer SCP must be "
                                "established before sending a C-STORE request")
 
         # Check `dataset` has required elements
-        if 'SOPClassUID' not in dataset:
+        if not context and 'SOPClassUID' not in dataset:
             raise AttributeError(
                 "Unable to determine the presentation context to use with "
                 "`dataset` as it contains no '(0008,0016) SOP Class UID' "
@@ -1735,7 +1749,7 @@ class Association(threading.Thread):
             )
 
         try:
-            assert 'TransferSyntaxUID' in dataset.file_meta
+            assert context or 'TransferSyntaxUID' in dataset.file_meta
         except (AssertionError, AttributeError):
             raise AttributeError(
                 "Unable to determine the presentation context to use with "
@@ -1744,12 +1758,13 @@ class Association(threading.Thread):
             )
 
         # Get a Presentation Context to use for sending the message
-        context = self._get_valid_context(
-            dataset.SOPClassUID,
-            dataset.file_meta.TransferSyntaxUID,
-            'scu'
-        )
-        transfer_syntax = context.transfer_syntax[0]
+        if not context:
+            context = self._get_valid_context(
+                dataset.SOPClassUID,
+                dataset.file_meta.TransferSyntaxUID,
+                'scu'
+            )
+            transfer_syntax = context.transfer_syntax[0]
 
         # Build C-STORE request primitive
         #   (M) Message ID
@@ -1761,20 +1776,25 @@ class Association(threading.Thread):
         #   (M) Data Set
         req = C_STORE()
         req.MessageID = msg_id
-        req.AffectedSOPClassUID = dataset.SOPClassUID
-        req.AffectedSOPInstanceUID = dataset.SOPInstanceUID
+        req.AffectedSOPClassUID = context.abstract_syntax
+        req.AffectedSOPInstanceUID = sop_instance_uid or dataset.SOPInstanceUID
         req.Priority = priority
         req.MoveOriginatorApplicationEntityTitle = originator_aet
         req.MoveOriginatorMessageID = originator_id
 
-        # Encode the `dataset` using the agreed transfer syntax
-        #   Will return None if failed to encode
-        bytestream = encode(dataset,
-                            transfer_syntax.is_implicit_VR,
-                            transfer_syntax.is_little_endian)
+        if not streaming:
+            # Encode the `dataset` using the agreed transfer syntax
+            #   Will return None if failed to encode
+            bytestream = encode(dataset,
+                                transfer_syntax.is_implicit_VR,
+                                transfer_syntax.is_little_endian)
+        else:
+            bytestream = dataset
 
         if bytestream is not None:
-            req.DataSet = BytesIO(bytestream)
+            if not streaming:
+                bytestream = BytesIO(bytestream)
+            req.DataSet = bytestream
         else:
             LOGGER.error("Failed to encode the supplied Dataset")
             raise ValueError('Failed to encode the supplied Dataset')

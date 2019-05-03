@@ -367,65 +367,56 @@ class DIMSEMessage(object):
         """
         self.context_id = context_id
 
+        def denote_last(iterable):
+            it = iter(iterable)
+            try:
+                current = next(it)
+            except StopIteration:
+                return
+            for i in it:
+                yield current, False
+                current = i
+            yield current, True
+
         # The Command Set is always Little Endian Implicit VR (PS3.7 6.3.1)
         #   encode(dataset, is_implicit_VR, is_little_endian)
         encoded_command_set = encode(self.command_set, True, True)
 
         # COMMAND SET (always)
-        # Split the command set into fragments with maximum size max_pdu_length
-        if max_pdu_length == 0:
-            no_fragments = 1
-        else:
-            no_fragments = ceil(
-                len(encoded_command_set) / (max_pdu_length - 6)
-            )
 
         cmd_fragments = self._generate_pdv_fragments(encoded_command_set,
                                                      max_pdu_length)
 
-        # First to (n - 1)th command data fragment - bits xxxxxx01
-        for ii in range(int(no_fragments - 1)):
+        for fragment, last in denote_last(cmd_fragments):
             pdata = P_DATA()
+            if last:
+                # Last command data fragment - bits xxxxxx11
+                b = b'\x03'
+            else:
+                # First to (n - 1)th command data fragment - bits xxxxxx01
+                b = b'\x01'
             pdata.presentation_data_value_list.append(
-                [context_id, b'\x01' + next(cmd_fragments)]
+                [context_id, b + fragment]
             )
             yield pdata
-
-        # Last command data fragment - bits xxxxxx11
-        pdata = P_DATA()
-        pdata.presentation_data_value_list.append(
-            [context_id, b'\x03' + next(cmd_fragments)]
-        )
-        yield pdata
 
         # DATASET (if available)
         #   Check that the Data Set is not empty
         if self.data_set is not None:
-            encoded_data_set = self.data_set.getvalue()
-            if encoded_data_set:
-                # Split the data set into fragments with maximum
-                #   size max_pdu_length
-                if max_pdu_length == 0:
-                    no_fragments = 1
-                else:
-                    no_fragments = ceil(
-                        len(encoded_data_set) / (max_pdu_length - 6)
-                    )
-                ds_fragments = self._generate_pdv_fragments(encoded_data_set,
-                                                            max_pdu_length)
+            self.data_set.seek(0)
+            ds_fragments = self._generate_pdv_fragments(self.data_set,
+                                                        max_pdu_length)
 
-                # First to (n - 1)th dataset fragment - bits xxxxxx00
-                for ii in range(int(no_fragments - 1)):
-                    pdata = P_DATA()
-                    pdata.presentation_data_value_list.append(
-                        [context_id, b'\x00' + next(ds_fragments)]
-                    )
-                    yield pdata
-
-                # Last dataset fragment - bits xxxxxx10
+            for fragment, last in denote_last(ds_fragments):
                 pdata = P_DATA()
+                if last:
+                    # Last dataset fragment - bits xxxxxx10
+                    b = b'\x02'
+                else:
+                    # First to (n - 1)th dataset fragment - bits xxxxxx00
+                    b = b'\x00'
                 pdata.presentation_data_value_list.append(
-                    [context_id, b'\x02' + next(ds_fragments)]
+                    [context_id, b + fragment]
                 )
                 yield pdata
 
@@ -446,7 +437,7 @@ class DIMSEMessage(object):
 
         Parameters
         ----------
-        bytestream : bytes
+        bytestream : bytes or BytesIO
             The data to be fragmented.
         fragment_length : int
             The maximum size of each fragment, a value of 0 is taken to mean
@@ -466,20 +457,27 @@ class DIMSEMessage(object):
         DICOM Standard, Part 8, Annex D.1
         """
         if fragment_length == 0:
+            if isinstance(bytestream, BytesIO):
+                bytestream = bytestream.getvalue()
             yield bytestream
             return
         elif 0 < fragment_length < 7:
             raise ValueError("'fragment_length' cannot be between 1 and 7.")
 
+        # Convert bytes to bytestream
+        if isinstance(bytestream, bytes):
+            bytestream = BytesIO(bytestream)
+
         # Because the PDV item includes an extra 6 bytes of data at the start
         #   we need to decrease `fragment_length` by 6 bytes.
         fragment_length -= 6
 
-        offset = 0
-        no_pdv = ceil(len(bytestream) / fragment_length)
-        for ii in range(int(no_pdv)):
-            yield bytestream[offset:offset + fragment_length]
-            offset += fragment_length
+        while True:
+            # Add the fragment to the output
+            fragment = bytestream.read(fragment_length)
+            if len(fragment) == 0:
+                return
+            yield fragment
 
     def message_to_primitive(self):
         """Convert the DIMSEMessage class to a DIMSE primitive.
