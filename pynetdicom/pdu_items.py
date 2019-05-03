@@ -856,9 +856,9 @@ class PresentationContextItemAC(PDUItem):
         primitive = PresentationContext()
         primitive.context_id = self.presentation_context_id
         primitive.result = self.result_reason
-        primitive.add_transfer_syntax(
-            self.transfer_syntax_sub_item[0].transfer_syntax_name
-        )
+        tsname = self.transfer_syntax_sub_item[0].transfer_syntax_name
+        if tsname:
+            primitive.add_transfer_syntax(tsname)
 
         return primitive
 
