@@ -1700,6 +1700,10 @@ class Association(threading.Thread):
         priority: int = 2,
         originator_aet: str | None = None,
         originator_id: int | None = None,
+        streaming: bool = False,
+        abstract_syntax: UID | None = None,
+        transfer_syntax: UID | None = None,
+        sop_instance_uid: UID | None = None,
     ) -> Dataset:
         """Send a C-STORE request to the peer AE.
 
@@ -1735,6 +1739,10 @@ class Association(threading.Thread):
             C-STORE request. This is the original *Message ID* parameter value
             for the C-MOVE request primitive for which the C-STORE
             sub-operation is being performed (default ``None``).
+        streaming : bool, optional
+            Treat `dataset` as an iterator. Do not encode in one shot before
+            sending the data. `encode(...)` will have to be called elsewhere
+            in the pipeline.
 
         Returns
         -------
@@ -1815,6 +1823,16 @@ class Association(threading.Thread):
           :dcm:`9.3.1<part07/sect_9.3.html#sect_9.3.1>` and
           :dcm:`Annex C<part07/chapter_C.html>`
         """
+
+        if abstract_syntax and transfer_syntax:
+            context = self._get_valid_context(
+                abstract_syntax,
+                transfer_syntax,
+                'scu'
+            )
+        else:
+            context = None
+
         # Can't send a C-STORE without an Association
         if not self.is_established:
             raise RuntimeError(
@@ -1837,7 +1855,7 @@ class Association(threading.Thread):
         req.MoveOriginatorMessageID = originator_id
 
         allow_conversion = True
-        if not isinstance(dataset, Dataset):
+        if not streaming and not isinstance(dataset, Dataset):
             fpath = Path(dataset)
             if not _config.STORE_SEND_CHUNKED_DATASET:
                 dataset = dcmread(os.fspath(fpath))
@@ -1865,7 +1883,7 @@ class Association(threading.Thread):
                 sop_instance = cast(UID, file_meta.MediaStorageSOPInstanceUID)
                 tsyntax = cast(UID, file_meta.TransferSyntaxUID)
 
-        if dataset:
+        if not streaming and dataset:
             dataset = cast(Dataset, dataset)
             missing = ["SOPClassUID", "SOPInstanceUID"]
             missing = [kw for kw in missing if kw not in dataset]
@@ -1916,26 +1934,32 @@ class Association(threading.Thread):
                     )
 
         # Get a Presentation Context to use for sending the message
-        context = self._get_valid_context(
-            sop_class, tsyntax, "scu", allow_conversion=allow_conversion
-        )
-        transfer_syntax = context.transfer_syntax[0]
+        if not context:
+            context = self._get_valid_context(
+                sop_class, tsyntax, "scu", allow_conversion=allow_conversion
+            )
+            transfer_syntax = context.transfer_syntax[0]
 
-        req.AffectedSOPClassUID = sop_class
-        req.AffectedSOPInstanceUID = sop_instance
+        req.AffectedSOPClassUID = context.abstract_syntax
+        req.AffectedSOPInstanceUID = sop_instance_uid or dataset.SOPInstanceUID
 
         # Encode the `dataset` using the agreed transfer syntax
         #   Will return None if failed to encode
         if dataset:
-            bytestream = encode(
-                cast(Dataset, dataset),
-                transfer_syntax.is_implicit_VR,
-                transfer_syntax.is_little_endian,
-                transfer_syntax.is_deflated,
-            )
+            if not streaming:
+                bytestream = encode(
+                    cast(Dataset, dataset),
+                    transfer_syntax.is_implicit_VR,
+                    transfer_syntax.is_little_endian,
+                    transfer_syntax.is_deflated,
+                )
+            else:
+                bytestream = dataset
 
             if bytestream is not None:
-                req.DataSet = BytesIO(bytestream)
+                if not streaming:
+                    bytestream = BytesIO(bytestream)
+                req.DataSet = bytestream
             else:
                 LOGGER.error("Failed to encode the supplied dataset")
                 raise ValueError("Failed to encode the supplied dataset")
