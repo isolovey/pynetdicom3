@@ -44,7 +44,7 @@ version = "2.1.1"
 
 [tool.poetry.dependencies]
 pydicom = "~2.4"
-python = "^3.10"
+python = ">=3.10"
 
 # Optional dependencies
 asv = { version = "^0.6", optional = true }
