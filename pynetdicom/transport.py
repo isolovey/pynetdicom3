@@ -413,12 +413,13 @@ class AssociationSocket:
                 )
 
             # Set ae connection timeout
+            network_timeout = self.socket.gettimeout()
             self.socket.settimeout(self.assoc.connection_timeout)
             # Try and connect to remote at (address, port)
             #   raises OSError if connection refused
             self.socket.connect(primitive.address_info.as_tuple)
-            # Clear ae connection timeout
-            self.socket.settimeout(None)
+            # Reset ae connection timeout to original value
+            self.socket.settimeout(network_timeout)
 
             # Update the Association.requestor's host and port with the actual values
             conn_info = self.socket.getsockname()
